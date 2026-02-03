@@ -41,6 +41,8 @@ class AudioPlayer:
         self.audio_queue: asyncio.Queue = asyncio.Queue()
         self.is_playing = False
         self._play_task: Optional[asyncio.Task] = None
+        self._first_audio_received = False
+        self._audio_chunks_processed = 0
 
         logger.info(
             f"AudioPlayer initialized: {sample_rate}Hz, {channels} channel(s), "
@@ -128,6 +130,20 @@ class AudioPlayer:
             # audioop.ulaw2lin(fragment, width)
             # width=2 means 16-bit (2 bytes per sample)
             pcm_data = audioop.ulaw2lin(mulaw_data, 2)
+
+            # Log conversion details for first chunk
+            if not self._first_audio_received:
+                logger.info("=" * 60)
+                logger.info("AUDIO CONVERSION PIPELINE - FIRST CHUNK")
+                logger.info("=" * 60)
+                logger.info(f"Step 3: mulaw → PCM Conversion")
+                logger.info(f"  Input:  {len(mulaw_data)} bytes mulaw (8-bit compressed)")
+                logger.info(f"  Output: {len(pcm_data)} bytes PCM (16-bit uncompressed)")
+                logger.info(f"  Ratio:  {len(pcm_data) / len(mulaw_data):.1f}x expansion")
+                logger.info(f"  Samples: {len(pcm_data) // 2} audio samples")
+                logger.info(f"  Duration: ~{(len(pcm_data) // 2) / self.sample_rate * 1000:.1f}ms")
+                logger.info("=" * 60)
+
             return pcm_data
         except Exception as e:
             logger.error(f"Failed to decode mulaw audio: {e}")
@@ -141,16 +157,42 @@ class AudioPlayer:
             payload: Base64-encoded mulaw audio data from Twilio
         """
         try:
+            # Log first audio chunk with detailed pipeline info
+            if not self._first_audio_received:
+                self._first_audio_received = True
+                logger.info("=" * 60)
+                logger.info("🎵 AUDIO TRANSMISSION STARTED - DATA CONVERSION PIPELINE")
+                logger.info("=" * 60)
+                logger.info(f"Step 1: Twilio Media Stream → WebSocket")
+                logger.info(f"  Received base64 payload: {len(payload)} characters")
+                logger.info("")
+
             # Decode base64 to raw mulaw bytes
             mulaw_data = base64.b64decode(payload)
+
+            # Log base64 decode for first chunk
+            if self._audio_chunks_processed == 0:
+                logger.info(f"Step 2: Base64 Decode")
+                logger.info(f"  Input:  {len(payload)} base64 characters")
+                logger.info(f"  Output: {len(mulaw_data)} bytes raw mulaw audio")
+                logger.info("")
 
             # Add to queue for playback
             await self.audio_queue.put(mulaw_data)
 
-            logger.debug(
-                f"Queued {len(mulaw_data)} bytes of mulaw audio "
-                f"(queue size: {self.audio_queue.qsize()})"
-            )
+            self._audio_chunks_processed += 1
+
+            # Log every 50 chunks after the first
+            if self._audio_chunks_processed % 50 == 0:
+                logger.info(
+                    f"📊 Processed {self._audio_chunks_processed} audio chunks, "
+                    f"queue size: {self.audio_queue.qsize()}"
+                )
+            else:
+                logger.debug(
+                    f"Queued {len(mulaw_data)} bytes of mulaw audio "
+                    f"(queue size: {self.audio_queue.qsize()})"
+                )
 
         except Exception as e:
             logger.error(f"Failed to queue audio: {e}")
@@ -162,6 +204,7 @@ class AudioPlayer:
         This should be run as an asyncio task.
         """
         logger.info("Starting audio playback loop")
+        first_playback = True
 
         try:
             while self.is_playing:
@@ -179,10 +222,20 @@ class AudioPlayer:
                         # Play audio through speakers
                         self.stream.write(pcm_data)
 
-                        logger.debug(
-                            f"Played {len(pcm_data)} bytes of PCM audio "
-                            f"(from {len(mulaw_data)} mulaw bytes)"
-                        )
+                        # Log first playback
+                        if first_playback:
+                            first_playback = False
+                            logger.info(f"Step 4: PCM Audio → Laptop Speakers")
+                            logger.info(f"  Playing {len(pcm_data)} bytes through: {self.audio.get_default_output_device_info()['name']}")
+                            logger.info(f"  Format: {self.sample_rate}Hz, {self.channels} channel(s), 16-bit PCM")
+                            logger.info("=" * 60)
+                            logger.info("✅ AUDIO PIPELINE ACTIVE - Sound playing through speakers!")
+                            logger.info("=" * 60)
+                        else:
+                            logger.debug(
+                                f"Played {len(pcm_data)} bytes of PCM audio "
+                                f"(from {len(mulaw_data)} mulaw bytes)"
+                            )
 
                 except asyncio.TimeoutError:
                     # No audio in queue, continue waiting
